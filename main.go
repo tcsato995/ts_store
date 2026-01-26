@@ -14,17 +14,22 @@ import (
 	"time"
 )
 
+const (
+	protocol   = "http"
+	serverAddr = "127.0.0.1:8080"
+	getPath    = "/retrieve"
+	putPath    = "/update"
+)
+
 var (
-	ds         timestampHandler
+	th         timestampHandler
 	client     *http.Client
 	httpServer *http.Server
 )
 
 func init() {
-	ds = &dataStore{}
-	client = &http.Client{
-		Timeout: time.Minute * 1,
-	}
+	initClient()
+	initDataStore()
 	initServer()
 }
 
@@ -33,15 +38,18 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	// start the HTTP Server
 	go startHTTPServer()
+
 	// store and retrieve by Client
-	makePutReq()
+	makePutReq("12345678")
 	makeGetReq()
 
 	<-sigCh
+	fmt.Println("shutting down server")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "error while shutting down httpServer: %s", err.Error())
+		_, err := fmt.Fprintf(os.Stderr, "error while shutting down httpServer: %s\n", err.Error())
+		handleErrFunc(err)
 	}
 }
 
@@ -50,48 +58,26 @@ type timestampHandler interface {
 	get() time.Time
 }
 
-// DataStore stores a unix timestamp in a time.Time format, concurrency safely
-// panics if an attempt to an operation to an unitialized DataStore happens
+// data store
 type dataStore struct {
-	ts        time.Time
-	writeFlag uint32
-}
-
-func (ds *dataStore) setWrite() {
-	if ds == nil {
-		panic("writing to uninitialized dataStore")
-	}
-	atomic.StoreUint32(&ds.writeFlag, 1)
-}
-
-func (ds *dataStore) unsetWrite() {
-	if ds == nil {
-		panic("writing to uninitialized dataStore")
-	}
-	atomic.StoreUint32(&ds.writeFlag, 0)
+	ts atomic.Value
 }
 
 func (ds *dataStore) store(ts int64) {
 	if ds == nil {
 		panic("writing to uninitialized dataStore")
 	}
-	ds.setWrite()
-	defer ds.unsetWrite()
-	ds.ts = time.Unix(ts, 0)
+	ds.ts.Store(time.Unix(ts, 0))
 }
 
 func (ds *dataStore) get() time.Time {
 	if ds == nil {
 		panic("reading from uninitialized dataStore")
 	}
-	ds.blockWhileWrite()
-	return ds.ts
-}
-
-func (ds *dataStore) blockWhileWrite() {
-	var readable uint32
-	for atomic.LoadUint32(&ds.writeFlag) != readable {
-	}
+	var ts time.Time
+	val := ds.ts.Load()
+	ts = val.(time.Time)
+	return ts
 }
 
 // HTTP handlers
@@ -112,23 +98,22 @@ func update(w http.ResponseWriter, r *http.Request) {
 		timestamp incomingTs
 		err       error
 	)
-	// kB seems like enough
+	// 1 kB should be enough
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	defer r.Body.Close()
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		fmt.Printf("error while reading the request body: %s", err.Error())
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	defer r.Body.Close()
 
 	timestamp = incomingTs(data)
-	intTs, err := timestamp.toInt()
+	int64Ts, err := timestamp.toInt64()
 	if err != nil {
 		http.Error(w, "invalid timestamp in request body", http.StatusBadRequest)
 		return
 	}
-	ds.store(intTs)
+	th.store(int64Ts)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -138,66 +123,120 @@ func retrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(strconv.Itoa(int(ds.get().Unix()))))
+	w.Write([]byte(strconv.FormatInt(th.get().Unix(), 10)))
 }
 
 // client code
-func makePutReq() {
-	req, err := http.NewRequest(http.MethodPut, "http://127.0.0.1:8080/update", bytes.NewReader([]byte("12345678")))
+func handleErrFunc(err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error while creating request: %s", err.Error())
+		fmt.Println("could not write error message: " + err.Error())
+	}
+}
+
+func makePutReq(ts string) {
+	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("%s://%s%s", protocol, serverAddr, putPath), bytes.NewReader([]byte(ts)))
+	if err != nil {
+		_, err = fmt.Fprintf(os.Stderr, "error while creating request: %s\n", err.Error())
+		handleErrFunc(err)
 		return
 	}
 	req.Header.Set("Content-Type", "text/plain")
 	rsp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error while making PUT request: %s", err.Error())
+		_, err = fmt.Fprintf(os.Stderr, "error while making PUT request: %s\n", err.Error())
+		handleErrFunc(err)
 		return
+	}
+	if rsp.StatusCode != http.StatusOK {
+		_, err = fmt.Fprintf(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
+		handleErrFunc(err)
+		if rsp.Body != nil {
+			msg, err := io.ReadAll(rsp.Body)
+			if err != nil {
+				_, err = fmt.Fprintf(os.Stderr, "error while reading error response: %s\n", err.Error())
+				handleErrFunc(err)
+				return
+			}
+			defer rsp.Body.Close()
+			_, err = fmt.Fprintf(os.Stderr, "error response: %s", string(msg))
+			handleErrFunc(err)
+		}
 	}
 	defer rsp.Body.Close()
 }
 
 func makeGetReq() {
-	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8080/retrieve", nil)
+	handleErrFunc := func(err error) {
+		if err != nil {
+			fmt.Println("could not write error message: " + err.Error())
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath), nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error while creating request: %s", err.Error())
+		_, err = fmt.Fprintf(os.Stderr, "error while creating request: %s\n", err.Error())
+		handleErrFunc(err)
 		return
 	}
 	rsp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error while making get request: %s", err.Error())
+		_, err = fmt.Fprintf(os.Stderr, "error while making get request: %s\n", err.Error())
+		handleErrFunc(err)
+		return
+	}
+	if rsp.StatusCode != http.StatusOK {
+		_, err = fmt.Fprintf(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
+		handleErrFunc(err)
+	}
+	data, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		_, err = fmt.Fprintf(os.Stderr, "error while reading response body: %s\n", err.Error())
+		handleErrFunc(err)
 		return
 	}
 	defer rsp.Body.Close()
-	data, err := io.ReadAll(rsp.Body)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error while reading response body: %s", err.Error())
-		return
-	}
-	fmt.Fprintf(os.Stdout, "recieved timestamp from server: %s", string(data))
+
+	fmt.Fprintf(os.Stdout, "recieved timestamp from server: %s\n", string(data))
 }
 
 // helpers
+func initDataStore() {
+	th = &dataStore{}
+	th.store(0)
+}
+
+func initClient() {
+	client = &http.Client{
+		Timeout: time.Second * 5,
+	}
+}
+
 func initServer() {
+	routes := map[string]http.HandlerFunc{
+		putPath: update,
+		getPath: retrieve,
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/update", update)
-	mux.HandleFunc("/retrieve", retrieve)
+	for path, handler := range routes {
+		mux.HandleFunc(path, handler)
+	}
 	httpServer = &http.Server{
-		Handler: mux,
-		Addr:    "127.0.0.1:8080",
+		Handler:      mux,
+		Addr:         serverAddr,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
 	}
 }
 
 func startHTTPServer() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Printf("error while listening: %s", err.Error())
+		fmt.Printf("error while listening: %s\n", err.Error())
 		return
 	}
 }
 
 type incomingTs string
 
-func (its incomingTs) toInt() (int64, error) {
+func (its incomingTs) toInt64() (int64, error) {
 	var (
 		tsI64 int64
 		err   error
