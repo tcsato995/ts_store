@@ -151,16 +151,16 @@ func makePutReq(ts string) {
 	defer rsp.Body.Close()
 }
 
-func makeGetReq() {
+func makeGetReq() string {
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath), nil)
 	if err != nil {
 		log(os.Stderr, "error while creating request: %s\n", err.Error())
-		return
+		return ""
 	}
 	rsp, err := client.Do(req)
 	if err != nil {
 		log(os.Stderr, "error while making get request: %s\n", err.Error())
-		return
+		return ""
 	}
 	if rsp.StatusCode != http.StatusOK {
 		log(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
@@ -168,10 +168,11 @@ func makeGetReq() {
 	data, err := io.ReadAll(rsp.Body)
 	if err != nil {
 		log(os.Stderr, "error while reading response body: %s\n", err.Error())
-		return
+		return ""
 	}
 	defer rsp.Body.Close()
 	log(os.Stdout, "recieved timestamp from server: %s\n", string(data))
+	return string(data)
 }
 
 // helpers

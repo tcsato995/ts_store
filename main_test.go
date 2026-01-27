@@ -135,6 +135,40 @@ func TestForRace(t *testing.T) {
 	wg.Wait()
 }
 
+func TestLog(t *testing.T) {
+	buf := bytes.NewBuffer([]byte{})
+	log(buf, "testing log functionality")
+	if buf.String() != "testing log functionality" {
+		t.Errorf("buf is not as expected: %s", buf.String())
+	}
+	buf.Reset()
+	log(buf, "with format string: %s", "OK")
+	if buf.String() != "with format string: OK" {
+		t.Errorf("buf is not as expected: %s", buf.String())
+	}
+}
+
+func TestHttpServer(t *testing.T) {
+	go func() {
+		startHTTPServer()
+	}()
+	defer stopHttpServer()
+
+	time.Sleep(time.Second * 2)
+	makePutReq("200")
+	if makeGetReq() != "200" {
+		t.Fatalf("put request was not successful")
+	}
+	makePutReq("1000")
+	if makeGetReq() != "1000" {
+		t.Fatalf("put request was not successful")
+	}
+	makePutReq("invalid")
+	if makeGetReq() != "1000" {
+		t.Fatalf("response is not what is expected")
+	}
+}
+
 func TestRetrieveHandler(t *testing.T) {
 	th.store(time.Unix(10, 0))
 
