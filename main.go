@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	logger "log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,22 +17,24 @@ import (
 )
 
 const (
-	protocol   = "http"
-	serverAddr = "127.0.0.1:8080"
-	getPath    = "/retrieve"
-	putPath    = "/update"
+	protocol       = "http"
+	serverAddr     = ":8080"
+	getPath        = "/retrieve"
+	putPath        = "/update"
+	defaultTimeout = 5 * time.Second
 )
 
 var (
-	th         timestampHandler
-	client     *http.Client
-	httpServer *http.Server
+	th          timestampHandler
+	client      *http.Client
+	httpServer  *http.Server
+	maxReqBytes = 1024 // 1 kB should be enough
 )
 
 func init() {
-	initClient()
+	initClient(defaultTimeout)
+	initServer(defaultTimeout)
 	initDataStore()
-	initServer()
 }
 
 func main() {
@@ -40,21 +44,15 @@ func main() {
 	go startHTTPServer()
 
 	// store and retrieve by Client
-	makePutReq("12345678")
+	makePutReq("123456789")
 	makeGetReq()
 
 	<-sigCh
-	fmt.Println("shutting down server")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
-		_, err := fmt.Fprintf(os.Stderr, "error while shutting down httpServer: %s\n", err.Error())
-		handleErrFunc(err)
-	}
+	stopHttpServer()
 }
 
 type timestampHandler interface {
-	store(ts int64)
+	store(ts time.Time)
 	get() time.Time
 }
 
@@ -63,11 +61,11 @@ type dataStore struct {
 	ts atomic.Value
 }
 
-func (ds *dataStore) store(ts int64) {
+func (ds *dataStore) store(ts time.Time) {
 	if ds == nil {
 		panic("writing to uninitialized dataStore")
 	}
-	ds.ts.Store(time.Unix(ts, 0))
+	ds.ts.Store(ts)
 }
 
 func (ds *dataStore) get() time.Time {
@@ -95,11 +93,10 @@ func update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var (
-		timestamp incomingTs
-		err       error
+		ts  timestamp
+		err error
 	)
-	// 1 kB should be enough
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxReqBytes))
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -107,13 +104,13 @@ func update(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	timestamp = incomingTs(data)
-	int64Ts, err := timestamp.toInt64()
+	ts = timestamp(data)
+	unixTime, err := ts.toUnixTime()
 	if err != nil {
 		http.Error(w, "invalid timestamp in request body", http.StatusBadRequest)
 		return
 	}
-	th.store(int64Ts)
+	th.store(unixTime)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -127,90 +124,80 @@ func retrieve(w http.ResponseWriter, r *http.Request) {
 }
 
 // client code
-func handleErrFunc(err error) {
-	if err != nil {
-		fmt.Println("could not write error message: " + err.Error())
-	}
-}
-
 func makePutReq(ts string) {
 	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("%s://%s%s", protocol, serverAddr, putPath), bytes.NewReader([]byte(ts)))
 	if err != nil {
-		_, err = fmt.Fprintf(os.Stderr, "error while creating request: %s\n", err.Error())
-		handleErrFunc(err)
+		log(os.Stderr, "error while creating request: %s\n", err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "text/plain")
 	rsp, err := client.Do(req)
 	if err != nil {
-		_, err = fmt.Fprintf(os.Stderr, "error while making PUT request: %s\n", err.Error())
-		handleErrFunc(err)
+		log(os.Stderr, "error while making PUT request: %s\n", err.Error())
 		return
 	}
 	if rsp.StatusCode != http.StatusOK {
-		_, err = fmt.Fprintf(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
-		handleErrFunc(err)
+		log(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
 		if rsp.Body != nil {
 			msg, err := io.ReadAll(rsp.Body)
 			if err != nil {
-				_, err = fmt.Fprintf(os.Stderr, "error while reading error response: %s\n", err.Error())
-				handleErrFunc(err)
+				log(os.Stderr, "error while reading error response: %s\n", err.Error())
 				return
 			}
 			defer rsp.Body.Close()
-			_, err = fmt.Fprintf(os.Stderr, "error response: %s", string(msg))
-			handleErrFunc(err)
+			log(os.Stderr, "error response: %s", string(msg))
 		}
 	}
 	defer rsp.Body.Close()
 }
 
 func makeGetReq() {
-	handleErrFunc := func(err error) {
-		if err != nil {
-			fmt.Println("could not write error message: " + err.Error())
-		}
-	}
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath), nil)
 	if err != nil {
-		_, err = fmt.Fprintf(os.Stderr, "error while creating request: %s\n", err.Error())
-		handleErrFunc(err)
+		log(os.Stderr, "error while creating request: %s\n", err.Error())
 		return
 	}
 	rsp, err := client.Do(req)
 	if err != nil {
-		_, err = fmt.Fprintf(os.Stderr, "error while making get request: %s\n", err.Error())
-		handleErrFunc(err)
+		log(os.Stderr, "error while making get request: %s\n", err.Error())
 		return
 	}
 	if rsp.StatusCode != http.StatusOK {
-		_, err = fmt.Fprintf(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
-		handleErrFunc(err)
+		log(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
 	}
 	data, err := io.ReadAll(rsp.Body)
 	if err != nil {
-		_, err = fmt.Fprintf(os.Stderr, "error while reading response body: %s\n", err.Error())
-		handleErrFunc(err)
+		log(os.Stderr, "error while reading response body: %s\n", err.Error())
 		return
 	}
 	defer rsp.Body.Close()
-
-	fmt.Fprintf(os.Stdout, "recieved timestamp from server: %s\n", string(data))
+	log(os.Stdout, "recieved timestamp from server: %s\n", string(data))
 }
 
 // helpers
-func initDataStore() {
-	th = &dataStore{}
-	th.store(0)
-}
-
-func initClient() {
-	client = &http.Client{
-		Timeout: time.Second * 5,
+func handleErrFunc(err error) {
+	if err != nil {
+		fmt.Println("could not write error message: " + err.Error())
 	}
 }
 
-func initServer() {
+func log(w io.Writer, format string, a ...any) {
+	_, err := fmt.Fprintf(w, format, a...)
+	handleErrFunc(err)
+}
+
+func initDataStore() {
+	th = &dataStore{}
+	th.store(time.Unix(0, 0))
+}
+
+func initClient(timeout time.Duration) {
+	client = &http.Client{
+		Timeout: timeout,
+	}
+}
+
+func initServer(timeout time.Duration) {
 	routes := map[string]http.HandlerFunc{
 		putPath: update,
 		getPath: retrieve,
@@ -222,27 +209,47 @@ func initServer() {
 	httpServer = &http.Server{
 		Handler:      mux,
 		Addr:         serverAddr,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		ReadTimeout:  timeout,
+		WriteTimeout: timeout,
 	}
 }
 
 func startHTTPServer() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Printf("error while listening: %s\n", err.Error())
+		logger.Fatalf("error while listening: %s\n", err.Error())
 		return
 	}
 }
 
-type incomingTs string
+func stopHttpServer() {
+	log(os.Stdout, "shutting down server\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log(os.Stderr, "error while shutting down httpServer: %s\n", err.Error())
+	}
+}
 
-func (its incomingTs) toInt64() (int64, error) {
+type timestamp string
+
+func (ts timestamp) toInt64() (int64, error) {
 	var (
 		tsI64 int64
 		err   error
 	)
-	if tsI64, err = strconv.ParseInt(string(its), 10, 64); err != nil {
-		return tsI64, err
+	if tsI64, err = strconv.ParseInt(string(ts), 10, 64); err != nil {
+		return tsI64, errors.New("invalid timestamp")
 	}
 	return tsI64, nil
+}
+
+func (ts timestamp) toUnixTime() (time.Time, error) {
+	tsI64, err := ts.toInt64()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if tsI64 < 0 {
+		return time.Time{}, errors.New("timestamp supplied is negative")
+	}
+	return time.Unix(tsI64, 0), nil
 }
