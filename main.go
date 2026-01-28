@@ -72,10 +72,8 @@ func (ds *dataStore) get() time.Time {
 	if ds == nil {
 		panic("reading from uninitialized dataStore")
 	}
-	var ts time.Time
 	val := ds.ts.Load()
-	ts = val.(time.Time)
-	return ts
+	return val.(time.Time)
 }
 
 // HTTP handlers
@@ -97,16 +95,19 @@ func update(w http.ResponseWriter, r *http.Request) {
 		err error
 	)
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxReqBytes))
+
+	defer r.Body.Close()
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
+		log(os.Stderr, "error while reading request body: %s", err.Error())
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
 
 	ts = timestamp(data)
 	unixTime, err := ts.toUnixTime()
 	if err != nil {
+		log(os.Stderr, "could not convert data to timestamp: %s", err.Error())
 		http.Error(w, "invalid timestamp in request body", http.StatusBadRequest)
 		return
 	}
@@ -165,26 +166,22 @@ func makeGetReq() string {
 	if rsp.StatusCode != http.StatusOK {
 		log(os.Stderr, "recieved non 200 status code from server: %s\n", rsp.Status)
 	}
+	defer rsp.Body.Close()
 	data, err := io.ReadAll(rsp.Body)
 	if err != nil {
 		log(os.Stderr, "error while reading response body: %s\n", err.Error())
 		return ""
 	}
-	defer rsp.Body.Close()
 	log(os.Stdout, "recieved timestamp from server: %s\n", string(data))
 	return string(data)
 }
 
 // helpers
-func handleErrFunc(err error) {
+func log(w io.Writer, format string, a ...any) {
+	_, err := fmt.Fprintf(w, format, a...)
 	if err != nil {
 		fmt.Println("could not write error message: " + err.Error())
 	}
-}
-
-func log(w io.Writer, format string, a ...any) {
-	_, err := fmt.Fprintf(w, format, a...)
-	handleErrFunc(err)
 }
 
 func initDataStore() {
