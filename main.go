@@ -22,13 +22,13 @@ const (
 	getPath        = "/retrieve"
 	putPath        = "/update"
 	defaultTimeout = 5 * time.Second
+	maxReqBytes    = 1024 // 1 kB should be enough
 )
 
 var (
-	th          timestampHandler
-	client      *http.Client
-	httpServer  *http.Server
-	maxReqBytes = 1024 // 1 kB should be enough
+	th         timestampHandler
+	client     *http.Client
+	httpServer *http.Server
 )
 
 func init() {

@@ -60,7 +60,7 @@ func TestInitClient(t *testing.T) {
 	}
 }
 
-func TestTimestamp(t *testing.T) {
+func TestTimestampType(t *testing.T) {
 	tests := []struct {
 		description string
 		inputTs     timestamp
@@ -90,6 +90,8 @@ func TestTimestamp(t *testing.T) {
 }
 
 func TestTimestampHandler(t *testing.T) {
+	defer resetStore()
+
 	tests := []struct {
 		description string
 		inputTs     time.Time
@@ -111,24 +113,23 @@ func TestTimestampHandler(t *testing.T) {
 }
 
 func TestForRace(t *testing.T) {
-	defer func() {
-		th.store(time.Unix(0, 0))
-	}()
+	defer resetStore()
 
 	// while there is no expectations for the outcomes, as it is hard to predict what the scheduler will do
 	// running with the -race flag should error if there is any race condition here
 	var wg sync.WaitGroup
-	for i := range 15 {
-		wg.Add(1)
+	numRoutines := 15
+	wg.Add(numRoutines)
+	for i := 0; i < numRoutines; i++ {
 		if i%2 == 0 {
 			go func(ts int64) {
+				defer wg.Done()
 				th.store(time.Unix(ts, 0))
-				wg.Done()
 			}(int64(i))
 		} else {
 			go func() {
+				defer wg.Done()
 				th.get()
-				wg.Done()
 			}()
 		}
 	}
@@ -149,6 +150,8 @@ func TestLog(t *testing.T) {
 }
 
 func TestHttpServer(t *testing.T) {
+	defer resetStore()
+
 	go func() {
 		startHTTPServer()
 	}()
@@ -170,9 +173,8 @@ func TestHttpServer(t *testing.T) {
 }
 
 func TestRetrieveHandler(t *testing.T) {
-	th.store(time.Unix(10, 0))
+	defer resetStore()
 
-	th.store(time.Unix(10, 0))
 	type tc struct {
 		description        string
 		method             string
@@ -240,7 +242,8 @@ func TestRetrieveHandler(t *testing.T) {
 }
 
 func TestUpdateHandler(t *testing.T) {
-	th.store(time.Unix(10, 0))
+	defer resetStore()
+
 	type tc struct {
 		description        string
 		contentType        string
@@ -325,4 +328,8 @@ func TestUpdateHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func resetStore() {
+	th.store(time.Unix(0, 0))
 }
