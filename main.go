@@ -99,7 +99,7 @@ func update(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		log(os.Stderr, "error while reading request body: %s", err.Error())
+		log(os.Stderr, "error while reading request body: %s\n", err.Error())
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -107,7 +107,7 @@ func update(w http.ResponseWriter, r *http.Request) {
 	ts = timestamp(data)
 	unixTime, err := ts.toUnixTime()
 	if err != nil {
-		log(os.Stderr, "could not convert data to timestamp: %s", err.Error())
+		log(os.Stderr, "could not convert data to timestamp: %s\n", err.Error())
 		http.Error(w, "invalid timestamp in request body", http.StatusBadRequest)
 		return
 	}
@@ -126,7 +126,7 @@ func retrieve(w http.ResponseWriter, r *http.Request) {
 
 // client code
 func makePutReq(ts string) {
-	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("%s://%s%s", protocol, serverAddr, putPath), bytes.NewReader([]byte(ts)))
+	req, err := http.NewRequest(http.MethodPut, getStorePath(), bytes.NewReader([]byte(ts)))
 	if err != nil {
 		log(os.Stderr, "error while creating request: %s\n", err.Error())
 		return
@@ -146,14 +146,14 @@ func makePutReq(ts string) {
 				return
 			}
 			defer rsp.Body.Close()
-			log(os.Stderr, "error response: %s", string(msg))
+			log(os.Stderr, "error response: %s\n", string(msg))
 		}
 	}
 	defer rsp.Body.Close()
 }
 
 func makeGetReq() string {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath), nil)
+	req, err := http.NewRequest(http.MethodGet, getRetrievePath(), nil)
 	if err != nil {
 		log(os.Stderr, "error while creating request: %s\n", err.Error())
 		return ""
@@ -177,6 +177,14 @@ func makeGetReq() string {
 }
 
 // helpers
+func getStorePath() string {
+	return fmt.Sprintf("%s://%s%s", protocol, serverAddr, putPath)
+}
+
+func getRetrievePath() string {
+	return fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath)
+}
+
 func log(w io.Writer, format string, a ...any) {
 	_, err := fmt.Fprintf(w, format, a...)
 	if err != nil {

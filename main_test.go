@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -213,7 +212,7 @@ func TestRetrieveHandler(t *testing.T) {
 		t.Run(test.description, func(t *testing.T) {
 			th.store(test.setupValue)
 
-			req := httptest.NewRequest(test.method, fmt.Sprintf("%s://%s%s", protocol, serverAddr, getPath), nil)
+			req := httptest.NewRequest(test.method, getRetrievePath(), nil)
 			w := httptest.NewRecorder()
 			retrieve(w, req)
 			res := w.Result()
@@ -305,7 +304,7 @@ func TestUpdateHandler(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.description, func(t *testing.T) {
-			req := httptest.NewRequest(test.method, fmt.Sprintf("%s://%s%s", protocol, serverAddr, putPath), test.body)
+			req := httptest.NewRequest(test.method, getStorePath(), test.body)
 			req.Header.Set("Content-Type", test.contentType)
 			w := httptest.NewRecorder()
 			update(w, req)
