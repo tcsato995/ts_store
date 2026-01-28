@@ -103,7 +103,7 @@ func TestTimestampHandler(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.description, func(t *testing.T) {
-			th.store(test.inputTs)
+			th.store(&test.inputTs)
 			if th.get() != test.expectedTs {
 				t.Errorf("expected: %d, got: %d", test.inputTs.Unix(), test.expectedTs.Unix())
 			}
@@ -123,7 +123,8 @@ func TestForRace(t *testing.T) {
 		if i%2 == 0 {
 			go func(ts int64) {
 				defer wg.Done()
-				th.store(time.Unix(ts, 0))
+				tsUnix := time.Unix(ts, 0)
+				th.store(&tsUnix)
 			}(int64(i))
 		} else {
 			go func() {
@@ -210,7 +211,7 @@ func TestRetrieveHandler(t *testing.T) {
 	}
 	for _, test := range testCases {
 		t.Run(test.description, func(t *testing.T) {
-			th.store(test.setupValue)
+			th.store(&test.setupValue)
 
 			req := httptest.NewRequest(test.method, getRetrievePath(), nil)
 			w := httptest.NewRecorder()
@@ -330,5 +331,5 @@ func TestUpdateHandler(t *testing.T) {
 }
 
 func resetStore() {
-	th.store(time.Unix(0, 0))
+	th.store(nil)
 }

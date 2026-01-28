@@ -52,16 +52,16 @@ func main() {
 }
 
 type timestampHandler interface {
-	store(ts time.Time)
+	store(ts *time.Time)
 	get() time.Time
 }
 
 // data store
 type dataStore struct {
-	ts atomic.Value
+	ts atomic.Pointer[time.Time]
 }
 
-func (ds *dataStore) store(ts time.Time) {
+func (ds *dataStore) store(ts *time.Time) {
 	if ds == nil {
 		panic("writing to uninitialized dataStore")
 	}
@@ -72,8 +72,14 @@ func (ds *dataStore) get() time.Time {
 	if ds == nil {
 		panic("reading from uninitialized dataStore")
 	}
+	var ts time.Time
 	val := ds.ts.Load()
-	return val.(time.Time)
+	if val != nil {
+		ts = *val
+	} else {
+		ts = time.Unix(0, 0)
+	}
+	return ts
 }
 
 // HTTP handlers
@@ -111,7 +117,7 @@ func update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid timestamp in request body", http.StatusBadRequest)
 		return
 	}
-	th.store(unixTime)
+	th.store(&unixTime)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -194,7 +200,6 @@ func log(w io.Writer, format string, a ...any) {
 
 func initDataStore() {
 	th = &dataStore{}
-	th.store(time.Unix(0, 0))
 }
 
 func initClient(timeout time.Duration) {
